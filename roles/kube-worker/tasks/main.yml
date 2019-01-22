@@ -1,0 +1,57 @@
+- block:
+  - name: 创建 kubernetes 相关目录
+    file: 
+      name: "{{ item }}"
+      state: directory
+    with_items:
+    - "{{ kubelet_root_dir }}"
+    - /usr/share/bash-completion/completions
+
+  - name: 获取 Docker Cgroup Driver 值
+    shell: docker info --format '{{ '{{' }} json .CgroupDriver {{ '}}' }}' | cut -d'"' -f2
+    register: docker_cgroup_driver
+
+  - name: 设置变量 DOCKER_CGROUP_DRIVER
+    set_fact: DOCKER_CGROUP_DRIVER="{{ docker_cgroup_driver.stdout }}"
+
+  - name: 读取 kubelet.conf 文件 stat 信息
+    stat:
+      path: /etc/kubernetes/kubelet.conf
+    register: kubelet_conf_stat
+
+  - name: 创建 kubeadm join 配置文件
+    template:
+      src: kubeadm-join.yaml.j2
+      dest: /etc/kubernetes/kubeadm-join.yaml
+    register: kubeadm_join_conf
+
+  - name: 重新加载 daemon
+    systemd:
+      daemon_reload: yes
+
+  - name: 确认 kubelet 已停止运行
+    service:
+      name: kubelet
+      state: stopped
+      enabled: yes
+    when: kubeadm_join_conf.changed or not kubelet_conf_stat.stat.exists
+
+  - name: worker 节点加入集群
+    shell: kubeadm join --config /etc/kubernetes/kubeadm-join.yaml --ignore-preflight-errors=DirAvailable--etc-kubernetes-manifests
+    when: kubeadm_join_conf.changed or not kubelet_conf_stat.stat.exists
+
+  # 因为还未部署网络插件，这里检测已注册到集群即算成功
+  - name: 轮询等待 worker 节点注册到集群中
+    shell: "kubectl get node {{ inventory_hostname }}|awk 'NR>1{print $2}'"
+    register: node_status
+    delegate_to: "{{ groups['kube-master']|first }}"
+    until: node_status.stdout == "NotReady"
+    retries: 60
+    delay: 5
+
+  - name: 设置 worker 节点 role
+    shell: "kubectl label node {{ inventory_hostname }} node-role.kubernetes.io/worker='' --overwrite"
+    delegate_to: "{{ groups['kube-master']|first }}"
+    ignore_errors: true
+
+  when: inventory_hostname not in groups['kube-master'] and (inventory_hostname in (groups['kube-worker'] + groups['new-worker']))

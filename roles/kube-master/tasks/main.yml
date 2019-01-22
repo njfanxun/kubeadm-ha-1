@@ -1,0 +1,164 @@
+- name: 创建 kubernetes 相关目录
+  file: 
+    name: "{{ item }}"
+    state: directory
+  with_items:
+  - "{{ kubelet_root_dir }}"
+  - /etc/kubernetes/pki
+  - /etc/kubernetes/manifests
+  - /usr/share/bash-completion/completions
+
+# 生成kubernetes证书并分发至集群各master节点
+- include_tasks: certificate.yaml
+
+- name: 获取 Docker Cgroup Driver 值
+  shell: docker info --format '{{ '{{' }} json .CgroupDriver {{ '}}' }}' | cut -d'"' -f2
+  register: docker_cgroup_driver
+
+- name: 设置变量 DOCKER_CGROUP_DRIVER
+  set_fact: DOCKER_CGROUP_DRIVER="{{ docker_cgroup_driver.stdout }}"
+
+- name: 创建 kubeadm 的配置文件
+  template: 
+    src: kubeadm-config.yaml.j2
+    dest: /etc/kubernetes/kubeadm-config.yaml
+    owner: root
+    mode: 0644
+
+- name: 读取 kubelet.conf 文件 stat 信息
+  stat: 
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf_stat
+
+- block:
+  - name: 获取第一个 master 节点需要拉取的镜像列表
+    shell: kubeadm config images list --config=/etc/kubernetes/kubeadm-config.yaml
+    register: image_list
+
+  - name: 第一个 master 节点拉取相关镜像
+    shell: "docker pull {{ item }}"
+    with_items:
+    - "{{ image_list.stdout_lines }}"
+
+  - name: 初始化第一个 master 节点
+    shell: kubeadm init --config=/etc/kubernetes/kubeadm-config.yaml
+    register: kubeadm_init_results
+
+  when: inventory_hostname == groups['kube-master']|first and not kubelet_conf_stat.stat.exists
+
+# 所有节点根据证书重新生成配置文件
+- include_tasks: configfile.yaml
+
+- block:
+  - name: 重新加载 daemon
+    systemd:
+      daemon_reload: yes
+
+  - name: 重新启动 kubelet
+    service:
+      name: kubelet
+      state: restarted
+      enabled: yes
+
+  - name: 等待 apiserver 运行
+    uri:
+      url: "https://{{ CURRENT_HOST_IP }}:6443/healthz"
+      validate_certs: no
+    register: apiserver_result
+    until: apiserver_result.status == 200
+    retries: 60
+    delay: 5
+
+  - name: 等待 kube-scheduler 运行
+    uri:
+      url: http://localhost:10251/healthz
+    register: scheduler_result
+    until: scheduler_result.status == 200
+    retries: 60
+    delay: 5
+
+  - name: 等待 kube-controller-manager 运行
+    uri:
+      url: http://localhost:10252/healthz
+    register: controller_manager_result
+    until: controller_manager_result.status == 200
+    retries: 60
+    delay: 5
+
+  when: inventory_hostname == groups['kube-master']|first and not kubelet_conf_stat.stat.exists
+
+- block:
+  - name: 获取其他 master 节点需要拉取的镜像列表
+    shell: kubeadm config images list --config=/etc/kubernetes/kubeadm-config.yaml
+    register: image_list
+
+  - name: 其他 master 节点拉取相关镜像
+    shell: "docker pull {{ item }}"
+    with_items:
+    - "{{ image_list.stdout_lines }}"
+
+  - name: 初始化其他的 master 节点，生成 kubelet 的 /var/lib/kubelet/config.yaml 配置文件
+    shell: kubeadm alpha phase kubelet config write-to-disk --config /etc/kubernetes/kubeadm-config.yaml
+
+  - name: 初始化其他的 master 节点，生成 kubelet 的 /var/lib/kubelet/kubeadm-flags.env 配置文件
+    shell: kubeadm alpha phase kubelet write-env-file --config /etc/kubernetes/kubeadm-config.yaml
+
+  - name: 初始化其他的 master 节点，生成 apiserver kube-controller-manager kube-scheduler static pod 文件
+    shell: kubeadm alpha phase controlplane all --config /etc/kubernetes/kubeadm-config.yaml
+
+  - name: 重新加载 daemon
+    systemd:
+      daemon_reload: yes
+
+  - name: 重新启动 kubelet
+    service:
+      name: kubelet
+      state: restarted
+      enabled: yes
+
+  - name: 等待 apiserver 运行
+    uri:
+      url: "https://{{ CURRENT_HOST_IP }}:6443/healthz"
+      validate_certs: no
+    register: apiserver_result
+    until: apiserver_result.status == 200
+    retries: 60
+    delay: 5
+
+  - name: 等待 kube-scheduler 运行
+    uri:
+      url: http://localhost:10251/healthz
+    register: scheduler_result
+    until: scheduler_result.status == 200
+    retries: 60
+    delay: 5
+
+  - name: 等待 kube-controller-manager 运行
+    uri:
+      url: http://localhost:10252/healthz
+    register: controller_manager_result
+    until: controller_manager_result.status == 200
+    retries: 60
+    delay: 5
+
+  - name: 引导其他的 master 节点生成进行注册
+    shell: kubeadm alpha phase mark-master --config /etc/kubernetes/kubeadm-config.yaml
+  when: inventory_hostname != groups['kube-master']|first and not kubelet_conf_stat.stat.exists
+
+- name: 创建 kubeconfig 目录
+  file: 
+    name: "{{ ansible_env.HOME }}/.kube"
+    state: directory
+
+- name: 复制 kubeconfig 文件到 .kube 目录
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "{{ ansible_env.HOME }}/.kube/config"
+    mode: 0644
+    remote_src: yes
+
+- name: 重写 kube-proxy 链接 apiserver 地址为 lb 地址
+  shell: kubectl get cm -n kube-system kube-proxy -o yaml | sed 's {{ CURRENT_HOST_IP }}:6443 {{ KUBE_APISERVER_IP | trim }}:{{ KUBE_APISERVER_PORT | trim }} g' | kubectl replace -f -
+  delegate_to: "{{ groups['kube-master']|first }}"
+  ignore_errors: true
+  run_once: true

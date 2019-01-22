@@ -1,0 +1,4 @@
+[Service]
+ExecStart=
+ExecStart=/usr/bin/kubelet --address=127.0.0.1 --pod-infra-container-image={{ pod_infra_container_image }} --pod-manifest-path=/etc/kubernetes/manifests --root-dir={{kubelet_root_dir}} --allow-privileged=true
+Restart=always

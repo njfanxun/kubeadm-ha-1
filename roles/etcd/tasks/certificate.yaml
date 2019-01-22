@@ -1,0 +1,185 @@
+# 根据stat信息判断是否已经生成过etcd证书，如果没有，下一步生成证书
+# 如果已经有etcd证书，为了保证整个安装的幂等性，跳过证书生成的步骤
+- block:
+  - name: 读取 etcd-ca 证书私钥 stat 信息
+    stat: 
+      path: /etc/kubernetes/pki/etcd/ca.key
+    register: etcd_ca_key_stat
+  - name: 读取 etcd-ca 证书 stat 信息
+    stat: 
+      path: /etc/kubernetes/pki/etcd/ca.crt
+    register: etcd_ca_crt_stat
+  - name: 读取 etcd-healthcheck 证书 stat 信息
+    stat: 
+      path: /etc/kubernetes/pki/etcd/healthcheck-client.crt
+    register: etcd_healthcheck_crt_stat
+  when: inventory_hostname == groups['etcd']|first
+
+# 在第一台etcd节点上创建所需要的证书
+- block:
+  - name: 创建 etcd 的证书请求配置
+    template: 
+      src: etcd-openssl.cnf.j2
+      dest: /etc/kubernetes/pki/etcd/etcd-openssl.cnf
+      owner: root
+      mode: 0644
+
+  - name: 创建 etcd-ca 根证书私钥
+    shell: >
+      cd /etc/kubernetes/pki/etcd/ &&
+      openssl genrsa -out ca.key 2048
+    when: etcd_ca_key_stat.stat.isreg is not defined
+
+  - name: 创建 etcd-ca 根证书
+    shell: >
+      cd /etc/kubernetes/pki/etcd/ &&
+      openssl req -x509 -new -nodes
+      -days {{ etcd_certs_time }}
+      -key ca.key
+      -config etcd-openssl.cnf
+      -subj "/CN=etcd-ca"
+      -extensions v3_ca
+      -out ca.crt
+    when: etcd_ca_crt_stat.stat.isreg is not defined
+
+  - name: 创建 etcd-server 证书私钥
+    shell: >
+      cd /etc/kubernetes/pki/etcd/ &&
+      openssl genrsa -out server.key 2048
+
+  - name: 创建 etcd-server 证书请求
+    shell: >
+      cd /etc/kubernetes/pki/etcd/ &&
+      openssl req -new -key server.key 
+      -subj "/CN=etcd-{{ inventory_hostname }}" 
+      -out server.csr
+
+  - name: 创建 etcd-server 证书
+    shell: >
+      cd /etc/kubernetes/pki/etcd/ &&
+      openssl x509 -req -CA ca.crt -CAkey ca.key 
+      -days {{ etcd_certs_time }} 
+      -in server.csr 
+      -CAcreateserial 
+      -extensions v3_req_server 
+      -extfile etcd-openssl.cnf 
+      -out server.crt
+
+  - name: 创建 etcd-peer 证书私钥
+    shell: >
+      cd /etc/kubernetes/pki/etcd/ &&
+      openssl genrsa -out peer.key 2048
+
+  - name: 创建 etcd-peer 证书请求
+    shell: >
+      cd /etc/kubernetes/pki/etcd/ &&
+      openssl req -new -key peer.key 
+      -subj "/CN=etcd-{{ inventory_hostname }}" 
+      -out peer.csr
+
+  - name: 创建 etcd-peer 证书
+    shell: >
+      cd /etc/kubernetes/pki/etcd/ &&
+      openssl x509 -req -CA ca.crt -CAkey ca.key 
+      -days {{ etcd_certs_time }} 
+      -in peer.csr 
+      -CAcreateserial 
+      -extensions v3_req_etcd 
+      -extfile etcd-openssl.cnf 
+      -out peer.crt
+
+  - name: 创建 apiserver-etcd-client 证书私钥
+    shell: >
+          cd /etc/kubernetes/pki/ &&
+          openssl genrsa -out apiserver-etcd-client.key 2048
+
+  - name: 创建 apiserver-etcd-client 证书请求
+    shell: >
+      cd /etc/kubernetes/pki/ &&
+      openssl req -new -key apiserver-etcd-client.key
+      -subj "/CN=kube-apiserver-etcd-client/O=system:masters" 
+      -out apiserver-etcd-client.csr
+
+  - name: 创建 apiserver-etcd-client 证书
+    shell: >
+      cd /etc/kubernetes/pki/ &&
+      openssl x509 -req -CA etcd/ca.crt -CAkey etcd/ca.key 
+      -days {{ etcd_certs_time }} 
+      -in apiserver-etcd-client.csr
+      -CAcreateserial 
+      -extensions v3_req_client 
+      -extfile etcd/etcd-openssl.cnf 
+      -out apiserver-etcd-client.crt
+
+  - name: 创建 etcd-healthcheck-client 证书私钥
+    shell: >
+          cd /etc/kubernetes/pki/etcd/ &&
+          openssl genrsa -out healthcheck-client.key 2048
+
+  - name: 创建 etcd-healthcheck-client 证书请求
+    shell: >
+      cd /etc/kubernetes/pki/etcd/ &&
+      openssl req -new -key healthcheck-client.key 
+      -subj "/CN=kube-etcd-healthcheck-client/O=system:masters" 
+      -out healthcheck-client.csr
+
+  - name: 创建 etcd-healthcheck-client 证书
+    shell: >
+      cd /etc/kubernetes/pki/etcd/ &&
+      openssl x509 -req -CA ca.crt -CAkey ca.key 
+      -days {{ etcd_certs_time }} 
+      -in healthcheck-client.csr 
+      -CAcreateserial 
+      -extensions v3_req_client 
+      -extfile etcd-openssl.cnf 
+      -out healthcheck-client.crt
+  when: inventory_hostname == groups['etcd']|first and (etcd_healthcheck_crt_stat.stat.isreg is not defined)
+
+- name: 获取 etcd 相关证书
+  slurp:
+    src: /etc/kubernetes/pki/etcd/{{ item }} 
+  with_items:
+  - ca.crt
+  - ca.key
+  - healthcheck-client.crt
+  - healthcheck-client.key
+  - peer.crt
+  - peer.key
+  - server.crt
+  - server.key
+  register: etcd_certs
+  delegate_to: "{{ groups['etcd']|first }}"
+  run_once: true
+
+- name: 分发 etcd 相关证书到 etcd 节点
+  copy:
+    dest: "{{ item.source }}"
+    content: "{{ item.content | b64decode }}"
+    owner: root
+    group: root
+    mode: 0700
+  no_log: true
+  with_items: "{{ etcd_certs.results }}"
+  when: inventory_hostname != groups['etcd']|first and (inventory_hostname in groups['etcd'])
+
+- name: 获取 apiserver kubelet etcd client 证书
+  slurp:
+    src: /etc/kubernetes/pki/{{ item }} 
+  with_items:
+  - etcd/ca.crt
+  - apiserver-etcd-client.crt
+  - apiserver-etcd-client.key
+  register: etcd_client_certs
+  delegate_to: "{{ groups['etcd']|first }}"
+  run_once: true
+
+- name: 分发 apiserver kubelet etcd clien 证书到 master 节点
+  copy:
+    dest: "{{ item.source }}"
+    content: "{{ item.content | b64decode }}"
+    owner: root
+    group: root
+    mode: 0700
+  no_log: true
+  with_items: "{{ etcd_client_certs.results }}"
+  when: inventory_hostname != groups['etcd']|first and (inventory_hostname in groups['kube-master'])
