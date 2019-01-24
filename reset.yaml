@@ -94,7 +94,6 @@
     - /var/lib/etcd
     - /var/lib/docker
     - /var/lib/kubelet
-    - /usr/share/bash-completion/completions/docker
     - /usr/share/bash-completion/completions/kubectl
 
   - name: 移除添加的 hosts 信息

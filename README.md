@@ -18,62 +18,22 @@
     - Ubuntu 16.04 请执行以下脚本：
 
         ``` bash
-        # 文档中脚本默认均以root用户执行
-        apt-get update && apt-get upgrade -y && apt-get dist-upgrade -y
-        # 安装python2
-        apt-get install python2.7
-        # Ubuntu16.04可能需要配置以下软连接
-        ln -s /usr/bin/python2.7 /usr/bin/python
-        # 安装git和pip
-        apt-get install git python-pip -y
+        sudo apt-get install git python3-pip sshpass -y
         ```
 
     - CentOS 7 请执行以下脚本：
 
         ``` bash
-        # 文档中脚本默认均以root用户执行
-        # 安装 epel 源并更新
-        yum install epel-release -y
-        yum update
-        # 安装python
-        yum install python -y
-        # 安装git和pip
-        yum install git python-pip -y
+        sudo yum install epel-release -y 
+        sudo yum install git python36 sshpass -y
+        sudo python3.6 -m ensurepip
+        sudo ln -s /usr/local/bin/pip3 /usr/bin/pip3
         ```
 
     - 安装ansible
         
         ``` bash
-        # pip安装ansible(国内如果安装太慢可以直接用pip阿里云加速)
-        # pip install pip --upgrade
-        # pip install ansible
-        pip install pip --upgrade -i https://mirrors.aliyun.com/pypi/simple/
-        
-        pip install --no-cache-dir ansible -i https://mirrors.aliyun.com/pypi/simple/
-        ```
-
-- 可能出现的问题：
-
-    - 在`Ubuntu 16.04`中，如果出现以下错误:
-
-        ``` bash
-        Traceback (most recent call last):
-        File "/usr/bin/pip", line 9, in <module>
-            from pip import main
-        ImportError: cannot import name main
-        ```
-    - 将`/usr/bin/pip`做以下修改：
-
-        ``` bash
-        #原代码
-        from pip import main
-        if __name__ == '__main__':
-            sys.exit(main())
-
-        #修改后
-        from pip import __main__
-        if __name__ == '__main__':
-            sys.exit(__main__._main())
+        sudo pip3 install --no-cache-dir ansible==2.7.5 netaddr -i https://mirrors.aliyun.com/pypi/simple/
         ```
 
 ## 2. 克隆本项目至ansible环境中：
