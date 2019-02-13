@@ -4,7 +4,7 @@ skip_verify_node: false
 # CentOS yum源仓库
 # base_yum_repo: http://mirrors.cloud.aliyuncs.com/centos/$releasever/os/$basearch/
 docker_yum_repo: https://mirrors.aliyun.com/docker-ce/linux/centos/7/$basearch/stable
-base_apt_repo: https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/
+kubernetes_yum_repo: https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/
 # Debian apt源仓库
 # base_apt_repo: deb http://mirrors.aliyun.com/{{ ansible_distribution | lower }}/ {{ ansible_distribution_release }} main restricted universe multiverse
 docker_apt_repo: deb [arch=amd64] https://mirrors.aliyun.com/docker-ce/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable
